@@ -8,16 +8,15 @@
 --a connection is needed.
 
 --The pool mechanics is simple (it's just a free list) until the connection
---limit is reached and then it gets more complicated: in order to honor the
---timeout on connect() and also preserve fifo order of waiting threads,
---the threads are put on a fifo waiting list, but they're also put in a heap
---with the most-impatient thread at the top, and a "waker" thread is set up
---to time-out the expired threads in the heap.
+--limit is reached and then it gets more complicated because we need to put
+--the threads on a waiting list and resume them in fifo order and we also
+--need to remove them from wherever they are on the waiting list on timeout.
+--This is made easy because we have: 1) a ring buffer that allows removal at
+--arbitrary positions and 2) sock's interruptible timers.
 
 local glue = require'glue'
 local sock = require'sock'
 local queue = require'queue'
-local heap = require'heap'
 
 local add = table.insert
 local pop = table.remove
@@ -55,63 +54,28 @@ function M.new(opt)
 			assert(waitlist_limit >= 0)
 		end
 
-		local q, h, exp_thread, exp_thread_suspended
-
-		local function cmp_expires(a, b) return a[2] < b[2] end
-
+		local q
 		local function wait(expires)
-			if waitlist_limit < 1 then --waiting list disabled
-				return nil, 'busy'
+			if waitlist_limit < 1 or not expires or expires <= sock.clock() then
+				return nil, 'timeout'
 			end
-			if expires <= sock.clock() then --doesn't want to wait
-				return nil, 'busy'
+			q = q or queue.new(waitlist_limit, 'queue_index')
+			if q:full() then
+				return nil, 'timeout'
 			end
-			if not q then --first time we don't have enough connections.
-				q = queue.new(waitlist_limit, 4)
-				h = heap.valueheap{cmp = cmp_expires, index_key = 3}
-				exp_thread = sock.newthread(function()
-					while true do
-						local t = h:peek()
-						if t then
-							local expires = t[2]
-							local now = sock.clock()
-							if expires < now then --expired
-								h:pop()
-								q:remove(t)
-								sock.resume(t[1], nil, 'busy')
-								break
-							else
-								sock.sleep_until(expires)
-							end
-						else
-							exp_thread_suspended = true
-							sock.suspend()
-							exp_thread_suspended = false
-						end
-					end
-				end)
-				exp_thread_suspended = true
+			local sleeper = sock.sleep_job()
+			q:push(sleeper)
+			if sleeper:sleep_until(expires) then
+				return true
+			else
+				return nil, 'timeout'
 			end
-			check_expired()
-			if q:full() then --waiting list full
-				return nil, 'busy'
-			end
-			--finally we can queue up and wait.
-			local t = {sock.currentthread(), expires}
-			q:push(t)
-			h:push(t)
-			if exp_thread_suspended then
-				sock.resume(exp_thread)
-			end
-			return sock.suspend()
-			--^^ either exp_thread or check_waitlist() will wake us up.
 		end
 
 		local function check_waitlist()
-			local t = q and q:pop()
-			if not t then return end
-			h:remove(t)
-			sock.resume(t[1], true)
+			local sleeper = q and q:pop()
+			if not sleeper then return end
+			sleeper:wakeup(true)
 		end
 
 		function pool:get(expires)
