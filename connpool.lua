@@ -33,8 +33,13 @@ function M.new(opt)
 	local pools = {}
 	local servers = {}
 
-	local function pool(host, port)
-		local key = host..':'..port
+	local logging = opt and opt.logging
+	local log = logging and function(severity, ev, ...)
+		logging.dbg(severity, 'cnpool', ev, ...)
+	end or glue.noop
+	local dbg = logging and function(ev, s) log('', ev, s) end or glue.noop
+
+	local function pool(key)
 		local pool = servers[key]
 		if pool then
 			return pool
@@ -47,6 +52,12 @@ function M.new(opt)
 		local limit = all_limit
 		local waitlist_limit = all_waitlist_limit
 
+		local log = logging and function(severity, ev, s)
+			logging.log(severity, 'cnpool', ev, 'n=%d free=%d %s', n, #free, s or '')
+		end or glue.noop
+		local dbg  = logging and function(ev, s) log(''    , ev, s) end or glue.noop
+		local note = logging and function(ev, s) log('note', ev, s) end or glue.noop
+
 		function pool:setlimits(opt)
 			limit = opt.max_connections or limit
 			waitlist_limit = opt.max_waiting_threads or waitlist_limit
@@ -57,10 +68,12 @@ function M.new(opt)
 		local q
 		local function wait(expires)
 			if waitlist_limit < 1 or not expires or expires <= sock.clock() then
+				dbg'notime'
 				return nil, 'timeout'
 			end
 			q = q or queue.new(waitlist_limit, 'queue_index')
 			if q:full() then
+				dbg'q-full'
 				return nil, 'timeout'
 			end
 			local sleeper = sock.sleep_job()
@@ -91,6 +104,7 @@ function M.new(opt)
 					return c
 				end
 				if n >= limit then
+					dbg'full'
 					return nil, 'busy'
 				end
 			end
@@ -104,10 +118,12 @@ function M.new(opt)
 			glue.before(s, 'close', function()
 				pool[c] = nil
 				n = n - 1
+				dbg'close'
 				check_waitlist()
 			end)
 			function c:release()
 				add(free, c)
+				note'release'
 				check_waitlist()
 			end
 			return c
@@ -116,17 +132,19 @@ function M.new(opt)
 		return pool
 	end
 
-	function pools:setlimits(host, port, opt)
+	function pools:setlimits(key, opt)
 		assert(limit >= 1)
-		pool(host, port):setlimits(opt)
+		pool(key):setlimits(opt)
 	end
 
-	function pools:get(host, port, expires)
-		return pool(host, port):get(expires)
+	function pools:get(key, expires)
+		dbg('get', '%s', key)
+		return pool(key):get(expires)
 	end
 
-	function pools:put(host, port, c, s)
-		return pool(host, port):put(c, s)
+	function pools:put(key, c, s)
+		dbg('put', '%s', key)
+		return pool(key):put(c, s)
 	end
 
 	return pools
@@ -136,21 +154,21 @@ end
 if not ... then
 
 	local pool = M.new{max_connections = 2, max_waiting_threads = 1}
-	local h, p = 'test', 1234
+	local h = 'test'
 
 	sock.run(function()
 
-		local c1 = pool:put(h, p, {}, {})
-		local c2 = pool:put(h, p, {}, {})
-		print(pool:get(h, p, sock.clock() + 1))
+		local c1 = pool:put(h, {}, {})
+		local c2 = pool:put(h, {}, {})
+		print(pool:get(h, sock.clock() + 1))
 
-		--local c, err = pool:get(h, p, 5)
+		--local c, err = pool:get(h, 5)
 		--assert(not c and err == 'empty')
 		--local s = {close = function() print'close' end}
 		--local c1 = {s = s}
-		--c = pool:put(h, p, c1, s)
+		--c = pool:put(h, c1, s)
 		--c:release()
-		--local c, err = pool:get(h, p, 5)
+		--local c, err = pool:get(h, 5)
 		--assert(c == c1)
 		--s:close()
 
