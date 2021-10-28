@@ -34,10 +34,10 @@ function M.new(opt)
 	local servers = {}
 
 	local logging = opt and opt.logging
-	local log = logging and function(severity, ev, ...)
-		logging.dbg(severity, 'cnpool', ev, ...)
+	local log_ = opt.log or logging and logging.log
+	local log = log and function(severity, ev, ...)
+		log_(severity, 'cnpool', ev, ...)
 	end or glue.noop
-	local dbg = logging and function(ev, s) log('', ev, s) end or glue.noop
 
 	local function pool(key)
 		local pool = servers[key]
@@ -53,7 +53,7 @@ function M.new(opt)
 		local waitlist_limit = all_waitlist_limit
 
 		local log = logging and function(severity, ev, s)
-			logging.log(severity, 'cnpool', ev, 'n=%d free=%d %s', n, #free, s or '')
+			log(severity, ev, '%s n=%d free=%d %s', key, n, #free, s or '')
 		end or glue.noop
 		local dbg  = logging and function(ev, s) log(''    , ev, s) end or glue.noop
 		local note = logging and function(ev, s) log('note', ev, s) end or glue.noop
@@ -92,6 +92,7 @@ function M.new(opt)
 		end
 
 		function pool:get(expires)
+			dbg'get'
 			local c = pop(free)
 			if c then
 				return c
@@ -115,6 +116,7 @@ function M.new(opt)
 			assert(n < limit)
 			pool[c] = true
 			n = n + 1
+			dbg'put'
 			glue.before(s, 'close', function()
 				pool[c] = nil
 				n = n - 1
@@ -138,12 +140,10 @@ function M.new(opt)
 	end
 
 	function pools:get(key, expires)
-		dbg('get', '%s', key)
 		return pool(key):get(expires)
 	end
 
 	function pools:put(key, c, s)
-		dbg('put', '%s', key)
 		return pool(key):put(c, s)
 	end
 
