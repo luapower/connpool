@@ -1,18 +1,21 @@
+--[[
 
---Connection pools.
---Written by Cosmin Apreutesei. Public domain.
+	Connection pools.
+	Written by Cosmin Apreutesei. Public domain.
 
---Connection pools allow reusing and sharing a limited number of connections
---between multiple threads in order to 1) avoid creating too many connections
---and 2) avoid the lag of connecting and authenticating every time
---a connection is needed.
+	Connection pools allow reusing and sharing a limited number of connections
+	between multiple threads in order to 1) avoid creating too many connections
+	and 2) avoid the lag of connecting and authenticating every time
+	a connection is needed.
 
---The pool mechanics is simple (it's just a free list) until the connection
---limit is reached and then it gets more complicated because we need to put
---the threads on a waiting list and resume them in fifo order and we also
---need to remove them from wherever they are on the waiting list on timeout.
---This is made easy because we have: 1) a ring buffer that allows removal at
---arbitrary positions and 2) sock's interruptible timers.
+	The pool mechanics is simple (it's just a free list) until the connection
+	limit is reached and then it gets more complicated because we need to put
+	the threads on a waiting list and resume them in fifo order and we also
+	need to remove them from wherever they are on the waiting list on timeout.
+	This is made easy because we have: 1) a ring buffer that allows removal at
+	arbitrary positions and 2) sock's interruptible timers.
+
+]]
 
 local glue = require'glue'
 local sock = require'sock'
